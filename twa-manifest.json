@@ -1,0 +1,34 @@
+{
+  "packageId": "app.syncstudy.twa",
+  "host": "ais-pre-mkcqv3l5iixjfngvgeneap-105486459628.asia-east1.run.app",
+  "name": "SyncStudy",
+  "launcherName": "SyncStudy",
+  "themeColor": "#FFFFFF",
+  "themeColorDark": "#0F172A",
+  "navigationColor": "#FFFFFF",
+  "navigationColorDark": "#0F172A",
+  "navigationDividerColor": "#00000000",
+  "navigationDividerColorDark": "#00000000",
+  "backgroundColor": "#F0F2F5",
+  "enableNotifications": true,
+  "startUrl": "/",
+  "iconUrl": "https://ais-pre-mkcqv3l5iixjfngvgeneap-105486459628.asia-east1.run.app/pwa-512x512.png",
+  "maskableIconUrl": "https://ais-pre-mkcqv3l5iixjfngvgeneap-105486459628.asia-east1.run.app/pwa-512x512.png",
+  "appVersionName": "1.0.0",
+  "appVersionCode": 1,
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "syncstudy"
+  },
+  "splashScreenFadeOutDuration": 300,
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "features": {
+    "playBilling": {
+      "enabled": false
+    }
+  },
+  "alphaDependencies": {
+    "enabled": false
+  }
+}

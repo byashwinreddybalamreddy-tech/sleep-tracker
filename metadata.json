@@ -1,0 +1,6 @@
+{
+  "name": "SyncStudy",
+  "description": "Student routine, sleep & study optimizer with automated alarm setter, reels counter, reminders, and class timetable integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
