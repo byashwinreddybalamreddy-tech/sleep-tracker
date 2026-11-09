@@ -34,6 +34,7 @@ export const ClassTimings: React.FC<ClassTimingsProps> = ({
   const [showAddForm, setShowAddForm] = useState(false);
   const [showUploadArea, setShowUploadArea] = useState(false);
   const [uploadText, setUploadText] = useState('');
+  const [replaceMode, setReplaceMode] = useState(true);
   const [isParsing, setIsParsing] = useState(false);
   const [parseStatus, setParseStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -87,6 +88,11 @@ export const ClassTimings: React.FC<ClassTimingsProps> = ({
     onUpdateClasses(classes.filter((c) => c.id !== id));
   };
 
+  const handleClearAllClasses = () => {
+    onUpdateClasses([]);
+    setParseStatus({ type: 'success', message: 'Cleared all classes. You can now add your own timetable!' });
+  };
+
   const handleParseText = async (textToParse: string) => {
     if (!textToParse.trim()) {
       setParseStatus({ type: 'error', message: 'Please paste schedule text or upload a file first.' });
@@ -105,10 +111,10 @@ export const ClassTimings: React.FC<ClassTimingsProps> = ({
 
       const data = await res.json();
       if (data.classes && Array.isArray(data.classes) && data.classes.length > 0) {
-        onUpdateClasses([...classes, ...data.classes]);
+        onUpdateClasses(replaceMode ? data.classes : [...classes, ...data.classes]);
         setParseStatus({
           type: 'success',
-          message: `Successfully extracted and added ${data.classes.length} class timings!`,
+          message: `Successfully ${replaceMode ? 'loaded' : 'added'} ${data.classes.length} class timings!`,
         });
         setUploadText('');
       } else {
@@ -172,7 +178,17 @@ export const ClassTimings: React.FC<ClassTimingsProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex items-center gap-2.5 shrink-0 flex-wrap">
+          {classes.length > 0 && (
+            <button
+              onClick={handleClearAllClasses}
+              className="px-3 py-2 text-xs font-medium rounded-lg bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100 transition-colors flex items-center gap-1.5 shadow-2xs"
+              title="Clear all classes to set up your own personal timetable"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+              Clear All ({classes.length})
+            </button>
+          )}
           <button
             onClick={() => setShowUploadArea(!showUploadArea)}
             className="px-3.5 py-2 text-xs font-medium rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 transition-colors flex items-center gap-1.5 shadow-2xs"
@@ -259,17 +275,23 @@ export const ClassTimings: React.FC<ClassTimingsProps> = ({
               placeholder="e.g.: Monday: 09:00 AM - 10:30 AM Calculus II in Hall 101, Prof Davis&#10;Wednesday: 11:00 AM - 12:30 PM Physics..."
               className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 placeholder-slate-400 font-mono focus:outline-none focus:border-blue-500 focus:bg-white"
             />
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] text-slate-400">
-                Natural text, markdown tables, or raw syllabus lines are supported.
-              </span>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+              <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={replaceMode}
+                  onChange={(e) => setReplaceMode(e.target.checked)}
+                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4"
+                />
+                <span className="font-medium text-slate-800">Replace current timetable with imported classes</span>
+              </label>
               <button
                 disabled={isParsing || !uploadText.trim()}
                 onClick={() => handleParseText(uploadText)}
-                className="px-4 py-2 bg-[#18181b] hover:bg-black disabled:opacity-50 text-white font-medium text-xs rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
+                className="px-4 py-2 bg-[#18181b] hover:bg-black disabled:opacity-50 text-white font-medium text-xs rounded-lg transition-colors flex items-center gap-1.5 shadow-xs shrink-0"
               >
                 <Sparkles className="w-3.5 h-3.5" />
-                {isParsing ? 'Parsing Timetable...' : 'Parse & Add Classes'}
+                {isParsing ? 'Parsing Timetable...' : replaceMode ? 'Parse & Set Timetable' : 'Parse & Append Classes'}
               </button>
             </div>
           </div>

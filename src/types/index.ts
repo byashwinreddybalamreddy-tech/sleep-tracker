@@ -62,6 +62,7 @@ export interface ReminderItem {
   category: 'class' | 'sleep' | 'study' | 'reels' | 'hydration';
   frequency: 'daily' | 'weekdays' | 'pre_class' | 'once';
   enabled: boolean;
+  completed?: boolean;
   notes?: string;
 }
 

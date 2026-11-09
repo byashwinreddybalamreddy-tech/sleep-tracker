@@ -1,5 +1,6 @@
 import express from 'express';
 import type { Request, Response } from 'express';
+import http from 'http';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
@@ -9,7 +10,8 @@ import { GoogleGenAI, Type } from '@google/genai';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const httpServer = http.createServer(app);
+const PORT = 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -25,43 +27,273 @@ const ai = process.env.GEMINI_API_KEY
     })
   : null;
 
+// Helper time parsers for dynamic student scheduling
+function parseTimeToMinutes(timeStr: string): number {
+  if (!timeStr) return 0;
+  const clean = timeStr.trim().toUpperCase();
+  const isPM = clean.includes('PM');
+  const isAM = clean.includes('AM');
+  const nums = clean.replace(/[^\d:]/g, '');
+  const [hStr, mStr] = nums.split(':');
+  let h = parseInt(hStr || '0', 10);
+  const m = parseInt(mStr || '0', 10);
+  if (isPM && h < 12) h += 12;
+  if (isAM && h === 12) h = 0;
+  return h * 60 + m;
+}
+
+function formatMinsTo12h(totalMins: number): string {
+  const norm = ((totalMins % 1440) + 1440) % 1440;
+  const h24 = Math.floor(norm / 60);
+  const m = norm % 60;
+  const period = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12}:${m.toString().padStart(2, '0')} ${period}`;
+}
+
+function parseScheduleText(rawText: string) {
+  const lines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const parsedClasses: any[] = [];
+  const dayPatterns = [
+    { name: 'Monday', regex: /\b(mon|monday)\b/i },
+    { name: 'Tuesday', regex: /\b(tue|tues|tuesday)\b/i },
+    { name: 'Wednesday', regex: /\b(wed|wednesday)\b/i },
+    { name: 'Thursday', regex: /\b(thu|thur|thurs|thursday)\b/i },
+    { name: 'Friday', regex: /\b(fri|friday)\b/i },
+    { name: 'Saturday', regex: /\b(sat|saturday)\b/i },
+    { name: 'Sunday', regex: /\b(sun|sunday)\b/i },
+  ];
+  const colors = ['#2563eb', '#7c3aed', '#059669', '#d97706', '#db2777', '#0891b2', '#4f46e5'];
+  let currentDay = 'Monday';
+
+  for (const line of lines) {
+    for (const d of dayPatterns) {
+      if (d.regex.test(line) && line.length < 25 && !/\d/.test(line)) {
+        currentDay = d.name;
+      }
+    }
+
+    const timeRegex = /(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|–|to)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i;
+    const match = line.match(timeRegex);
+
+    if (match) {
+      let rawStart = match[1].trim();
+      let rawEnd = match[2].trim();
+
+      if (!/(am|pm)/i.test(rawStart) && /(am|pm)/i.test(rawEnd)) {
+        const period = rawEnd.match(/(am|pm)/i)?.[0] || 'AM';
+        rawStart += ' ' + period;
+      }
+
+      const startMins = parseTimeToMinutes(rawStart);
+      let endMins = parseTimeToMinutes(rawEnd);
+      if (endMins <= startMins) endMins = startMins + 60;
+
+      const formattedStart = formatMinsTo12h(startMins);
+      const formattedEnd = formatMinsTo12h(endMins);
+
+      let lineDay = currentDay;
+      for (const d of dayPatterns) {
+        if (d.regex.test(line)) {
+          lineDay = d.name;
+          break;
+        }
+      }
+
+      let subject = line
+        .replace(match[0], '')
+        .replace(/\b(mon|monday|tue|tues|tuesday|wed|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday|sun|sunday)\b/gi, '')
+        .replace(/[,;|]/g, ' ')
+        .trim();
+
+      const roomMatch = subject.match(/\b(?:room|hall|lab|rm|bldg|building)?\s*([A-Za-z]?\d{2,4}[A-Za-z]?)\b/i);
+      let location = 'Campus Room TBA';
+      if (roomMatch) {
+        location = roomMatch[0];
+        subject = subject.replace(roomMatch[0], '').trim();
+      }
+
+      subject = subject.replace(/^[-:–]\s*/, '').replace(/\s*[-:–]$/, '').trim();
+      if (!subject || subject.length < 2) {
+        subject = 'Class Lecture';
+      }
+
+      parsedClasses.push({
+        id: 'cls_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        name: subject,
+        day: lineDay,
+        startTime: formattedStart,
+        endTime: formattedEnd,
+        location,
+        color: colors[parsedClasses.length % colors.length],
+      });
+    }
+  }
+
+  return parsedClasses;
+}
+
+// Dynamic Student Routine Builder
+function buildDynamicStudentRoutine(
+  classes: any[],
+  sleepRecords: any[],
+  reelsCount: number,
+  targetSleepHours: number
+) {
+  const daysMap = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const todayDayName = daysMap[new Date().getDay()];
+  const studentClasses = Array.isArray(classes) ? classes : [];
+
+  // Filter classes for today or next closest day
+  let dayClasses = studentClasses
+    .filter((c: any) => c.day === todayDayName)
+    .sort((a: any, b: any) => parseTimeToMinutes(a.startTime) - parseTimeToMinutes(b.startTime));
+
+  if (dayClasses.length === 0 && studentClasses.length > 0) {
+    dayClasses = studentClasses.slice(0, 3).sort((a: any, b: any) => parseTimeToMinutes(a.startTime) - parseTimeToMinutes(b.startTime));
+  }
+
+  const earliestClass = dayClasses[0];
+  const targetSleep = Number(targetSleepHours) || 8;
+  const prepAndCommuteMins = 75;
+
+  let wakeMinutes = 7 * 60; // 07:00 AM
+  if (earliestClass) {
+    const classStartMins = parseTimeToMinutes(earliestClass.startTime);
+    wakeMinutes = Math.max(5 * 60 + 30, classStartMins - prepAndCommuteMins);
+  }
+  const bedtimeMinutes = wakeMinutes - targetSleep * 60;
+
+  const schedule: Array<{ time: string; activity: string; category: string }> = [];
+
+  schedule.push({
+    time: formatMinsTo12h(wakeMinutes),
+    activity: 'Wake Up & Natural Morning Sunlight Hydration',
+    category: 'wake',
+  });
+
+  schedule.push({
+    time: `${formatMinsTo12h(wakeMinutes + 20)} - ${formatMinsTo12h(wakeMinutes + 55)}`,
+    activity: 'Morning Prep, High-Protein Breakfast & Mental Prime',
+    category: 'meal',
+  });
+
+  if (dayClasses.length > 0) {
+    dayClasses.forEach((cls: any, idx: number) => {
+      schedule.push({
+        time: `${cls.startTime} - ${cls.endTime}`,
+        activity: `Lecture: ${cls.name} (${cls.location || 'Hall'})`,
+        category: 'class',
+      });
+
+      const nextCls = dayClasses[idx + 1];
+      if (nextCls) {
+        const currentEnd = parseTimeToMinutes(cls.endTime);
+        const nextStart = parseTimeToMinutes(nextCls.startTime);
+        if (nextStart - currentEnd >= 60) {
+          schedule.push({
+            time: `${formatMinsTo12h(currentEnd + 15)} - ${formatMinsTo12h(nextStart - 15)}`,
+            activity: `Review Notes & Practice Problem Sets for ${cls.name}`,
+            category: 'study',
+          });
+        }
+      }
+    });
+  } else {
+    schedule.push({
+      time: '09:30 AM - 11:30 AM',
+      activity: 'Focused Deep Study Session (Pomodoro 50/10)',
+      category: 'study',
+    });
+  }
+
+  schedule.push({
+    time: '12:30 PM - 01:30 PM',
+    activity: 'Healthy Lunch & Brain Reset Walk (Screen-Free)',
+    category: 'meal',
+  });
+
+  schedule.push({
+    time: '02:30 PM - 04:30 PM',
+    activity: 'Peak Afternoon Focus: Problem Sets & Project Work',
+    category: 'study',
+  });
+
+  const reelMinutesLost = Math.round((reelsCount || 0) * 0.75);
+  schedule.push({
+    time: '05:00 PM - 05:30 PM',
+    activity: `Scheduled Downtime / Reels Break (Cap: ${Math.max(15, reelsCount || 25)} reels max)`,
+    category: 'winddown',
+  });
+
+  schedule.push({
+    time: '06:00 PM - 07:00 PM',
+    activity: 'Physical Activity / Gym / Jog / Socializing',
+    category: 'exercise',
+  });
+
+  schedule.push({
+    time: '07:30 PM - 08:30 PM',
+    activity: 'Dinner & Relaxation Time',
+    category: 'meal',
+  });
+
+  schedule.push({
+    time: '08:45 PM - 09:45 PM',
+    activity: 'Tomorrow Class Prep, Schedule Verification & Backpack Check',
+    category: 'study',
+  });
+
+  schedule.push({
+    time: formatMinsTo12h(bedtimeMinutes - 45),
+    activity: 'Digital Sunset: Zero Reels / Screens Off / Alpha Wave Winddown',
+    category: 'winddown',
+  });
+
+  schedule.push({
+    time: formatMinsTo12h(bedtimeMinutes),
+    activity: `Restorative Sleep - Locked for ${targetSleep}h recovery`,
+    category: 'sleep',
+  });
+
+  const insight = earliestClass
+    ? `Your earliest lecture is ${earliestClass.name} at ${earliestClass.startTime}. Waking at ${formatMinsTo12h(wakeMinutes)} provides a 75-minute low-stress runway for prep and commute.`
+    : `Your routine is anchored to wake up at ${formatMinsTo12h(wakeMinutes)} and sleep at ${formatMinsTo12h(bedtimeMinutes)} to guarantee your ${targetSleep} hours of restorative sleep.`;
+
+  const reelsText = reelsCount > 0
+    ? `You logged ${reelsCount} reels today (~${reelMinutesLost} mins). Keeping reels strictly to the 5:00 PM window saves up to 45 mins of prime evening focus.`
+    : 'Zero reels logged so far today! Excellent focus reserve. Continue prioritizing deep work.';
+
+  return {
+    bedtimeRecommendation: formatMinsTo12h(bedtimeMinutes),
+    wakeRecommendation: formatMinsTo12h(wakeMinutes),
+    circadianInsight: insight,
+    reelsImpact: reelsText,
+    optimizedSchedule: schedule,
+    tips: [
+      earliestClass ? `Review key formulas for ${earliestClass.name} 20 minutes before class.` : 'Use early morning natural light to boost daytime dopamine sustainably.',
+      'Replace bedtime phone scrolling with relaxing audio to fall asleep 30 mins faster.',
+      'Use the Pomodoro timer in Study Focus to maintain sustained concentration blocks.',
+    ],
+  };
+}
+
 // API Route: Routine & Schedule Optimization
 app.post('/api/gemini/optimize-routine', async (req: Request, res: Response) => {
   try {
     const { classes, sleepRecords, reelsCount, targetSleepHours, studySessions } = req.body;
+    const dynamicResult = buildDynamicStudentRoutine(classes, sleepRecords, reelsCount || 0, targetSleepHours || 8);
 
     if (!ai) {
-      // Rule-based heuristic fallback if API key is not present
       return res.json({
         success: true,
-        source: 'heuristic',
-        analysis: 'AI API key not detected, generated routine using circadian heuristic engine.',
-        bedtimeRecommendation: '11:00 PM',
-        wakeRecommendation: '07:00 AM',
-        circadianInsight: 'Aim for a consistent 7.5 to 8 hour sleep window. Keep bright screen and reels scrolling to 0 within 45 minutes of sleep.',
-        reelsImpact: `${reelsCount} reels watched today (~${Math.round(reelsCount * 0.75)} mins). Limiting reels to under 30 reels/day saves up to 45 mins of prime study focus.`,
-        optimizedSchedule: [
-          { time: '07:00 AM', activity: 'Wake Up & Natural Light Hydration', category: 'wake' },
-          { time: '07:30 AM', activity: 'Morning Prep & Healthy Breakfast', category: 'meal' },
-          { time: '08:30 AM - 12:30 PM', activity: 'Class / Lecture Blocks', category: 'class' },
-          { time: '12:30 PM - 01:30 PM', activity: 'Lunch & Cognitive Reset (No Reels)', category: 'meal' },
-          { time: '02:00 PM - 04:00 PM', activity: 'High-Focus Deep Study (Pomodoro 50/10)', category: 'study' },
-          { time: '04:15 PM - 05:30 PM', activity: 'Secondary Study / Revision / Assignments', category: 'study' },
-          { time: '06:00 PM - 07:00 PM', activity: 'Physical Activity / Walk / Socializing', category: 'exercise' },
-          { time: '07:30 PM - 08:30 PM', activity: 'Dinner & Relaxation Time', category: 'meal' },
-          { time: '08:30 PM - 09:45 PM', activity: 'Light Reading / Prep for Tomorrow Classes', category: 'study' },
-          { time: '10:15 PM', activity: 'Digital Wind-Down: Night Screen Off', category: 'winddown' },
-          { time: '11:00 PM', activity: 'Sleep - Target 8h Rest', category: 'sleep' },
-        ],
-        tips: [
-          'Stack study blocks immediately after morning classes while concepts are fresh.',
-          'Replace night-time reel scrolling with audiobooks or paper reading to fall asleep 30 mins faster.',
-          'Use the Automated Alarm to lock in a consistent wake time across weekdays.',
-        ],
+        source: 'dynamic-circadian-engine',
+        ...dynamicResult,
       });
     }
 
-    const prompt = `
+    try {
+      const prompt = `
 You are an expert student productivity and circadian sleep coach. Analyze this student's data:
 Classes: ${JSON.stringify(classes || [])}
 Sleep logs: ${JSON.stringify(sleepRecords || [])}
@@ -70,57 +302,54 @@ Target Sleep Hours: ${targetSleepHours || 8}
 Study sessions: ${JSON.stringify(studySessions || [])}
 
 Generate an optimal daily routine tailored to their class schedule and energy levels. 
-Focus on:
-1. Exact wake-up and bedtime that guarantees adequate sleep before their earliest class.
-2. High-impact deep work study blocks slotted around classes.
-3. Realistic reel/social media boundaries (counteracting doomscrolling).
-4. Concrete actionable student tips.
+Format strictly as JSON matching the schema.`;
 
-Format strictly as JSON.`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            bedtimeRecommendation: { type: Type.STRING },
-            wakeRecommendation: { type: Type.STRING },
-            circadianInsight: { type: Type.STRING },
-            reelsImpact: { type: Type.STRING },
-            optimizedSchedule: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  time: { type: Type.STRING },
-                  activity: { type: Type.STRING },
-                  category: { type: Type.STRING },
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              bedtimeRecommendation: { type: Type.STRING },
+              wakeRecommendation: { type: Type.STRING },
+              circadianInsight: { type: Type.STRING },
+              reelsImpact: { type: Type.STRING },
+              optimizedSchedule: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    time: { type: Type.STRING },
+                    activity: { type: Type.STRING },
+                    category: { type: Type.STRING },
+                  },
+                  required: ['time', 'activity', 'category'],
                 },
-                required: ['time', 'activity', 'category'],
+              },
+              tips: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
               },
             },
-            tips: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-            },
+            required: [
+              'bedtimeRecommendation',
+              'wakeRecommendation',
+              'circadianInsight',
+              'reelsImpact',
+              'optimizedSchedule',
+              'tips',
+            ],
           },
-          required: [
-            'bedtimeRecommendation',
-            'wakeRecommendation',
-            'circadianInsight',
-            'reelsImpact',
-            'optimizedSchedule',
-            'tips',
-          ],
         },
-      },
-    });
+      });
 
-    const parsed = JSON.parse(response.text || '{}');
-    return res.json({ success: true, source: 'gemini', ...parsed });
+      const parsed = JSON.parse(response.text || '{}');
+      return res.json({ success: true, source: 'gemini', ...parsed });
+    } catch {
+      return res.json({ success: true, source: 'dynamic-circadian-engine', ...dynamicResult });
+    }
   } catch (error: any) {
     console.error('Error in /api/gemini/optimize-routine:', error);
     return res.status(500).json({
@@ -138,74 +367,60 @@ app.post('/api/gemini/parse-schedule', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'rawText string is required' });
     }
 
-    if (!ai) {
-      // Fallback simple line-by-line extractor
-      const lines = rawText.split('\n').filter((l) => l.trim().length > 0);
-      const extracted: any[] = [];
-      const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-      let currentDay = 'Monday';
+    const heuristicParsed = parseScheduleText(rawText);
 
-      for (const line of lines) {
-        for (const d of days) {
-          if (line.toLowerCase().includes(d.toLowerCase())) {
-            currentDay = d;
-          }
-        }
-        const timeMatch = line.match(/(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)\s*(?:-|to)\s*(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)/i);
-        if (timeMatch) {
-          extracted.push({
-            id: 'c_' + Math.random().toString(36).substring(2, 9),
-            name: line.replace(timeMatch[0], '').replace(currentDay, '').trim() || 'Class Session',
-            day: currentDay,
-            startTime: timeMatch[1].trim(),
-            endTime: timeMatch[2].trim(),
-            location: 'Room TBA',
-            color: '#3B82F6',
-          });
-        }
+    if (!ai || heuristicParsed.length > 0) {
+      if (heuristicParsed.length > 0) {
+        return res.json({ success: true, source: 'smart-parser', classes: heuristicParsed });
       }
-
-      return res.json({ success: true, source: 'parser-heuristic', classes: extracted });
     }
 
-    const prompt = `Extract all class timetable timings and subjects from the following student text/schedule:\n"${rawText}"\n
+    if (!ai) {
+      return res.json({ success: true, source: 'smart-parser', classes: heuristicParsed });
+    }
+
+    try {
+      const prompt = `Extract all class timetable timings and subjects from the following student text/schedule:\n"${rawText}"\n
 Normalize times to 12-hour format with AM/PM (e.g., "09:00 AM", "01:30 PM").
 Days should be full day name: "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", or "Sunday".
-Assign a distinct attractive hex color code for each subject (e.g. #3b82f6, #10b981, #8b5cf6, #f59e0b, #ec4899, #06b6d4).`;
+Assign a distinct attractive hex color code for each subject.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              name: { type: Type.STRING, description: 'Subject or course title' },
-              code: { type: Type.STRING, description: 'Course code like CS101, MATH201 if present' },
-              day: { type: Type.STRING, description: 'Day of week e.g. Monday' },
-              startTime: { type: Type.STRING, description: 'e.g. 09:00 AM' },
-              endTime: { type: Type.STRING, description: 'e.g. 10:30 AM' },
-              location: { type: Type.STRING, description: 'Room or Hall' },
-              instructor: { type: Type.STRING, description: 'Professor name if mentioned' },
-              color: { type: Type.STRING, description: 'Hex color code' },
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING, description: 'Subject or course title' },
+                code: { type: Type.STRING, description: 'Course code like CS101, MATH201 if present' },
+                day: { type: Type.STRING, description: 'Day of week e.g. Monday' },
+                startTime: { type: Type.STRING, description: 'e.g. 09:00 AM' },
+                endTime: { type: Type.STRING, description: 'e.g. 10:30 AM' },
+                location: { type: Type.STRING, description: 'Room or Hall' },
+                instructor: { type: Type.STRING, description: 'Professor name if mentioned' },
+                color: { type: Type.STRING, description: 'Hex color code' },
+              },
+              required: ['name', 'day', 'startTime', 'endTime'],
             },
-            required: ['name', 'day', 'startTime', 'endTime'],
           },
         },
-      },
-    });
+      });
 
-    const parsedClasses = JSON.parse(response.text || '[]');
-    const finalized = parsedClasses.map((item: any, idx: number) => ({
-      ...item,
-      id: 'cls_' + Date.now() + '_' + idx,
-      color: item.color || ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#ec4899', '#06b6d4'][idx % 6],
-    }));
+      const parsedClasses = JSON.parse(response.text || '[]');
+      const finalized = parsedClasses.map((item: any, idx: number) => ({
+        ...item,
+        id: 'cls_' + Date.now() + '_' + idx,
+        color: item.color || ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#ec4899', '#06b6d4'][idx % 6],
+      }));
 
-    return res.json({ success: true, source: 'gemini', classes: finalized });
+      return res.json({ success: true, source: 'gemini', classes: finalized });
+    } catch {
+      return res.json({ success: true, source: 'smart-parser', classes: heuristicParsed });
+    }
   } catch (error: any) {
     console.error('Error in /api/gemini/parse-schedule:', error);
     return res.status(500).json({
@@ -318,13 +533,16 @@ async function startServer() {
     });
   } else {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`SyncStudy server running on http://0.0.0.0:${PORT} (${isDev ? 'development' : 'production'})`);
   });
 }

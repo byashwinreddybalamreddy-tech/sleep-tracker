@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ClassScheduleItem, SleepRecord, ReelsLog, StudySession, StudentPreferences, RoutineItem } from '../types';
 import {
   Sparkles,
@@ -58,6 +58,11 @@ export const RoutineOptimizer: React.FC<RoutineOptimizerProps> = ({
       'Stop social media feeds 45 minutes prior to sleep to preserve deep slow-wave REM sleep.',
     ],
   });
+
+  // Auto-generate customized routine when classes or sleep preferences change
+  useEffect(() => {
+    handleGenerateOptimization();
+  }, [classes.length, preferences.targetSleepHours]);
 
   const handleGenerateOptimization = async () => {
     setIsOptimizing(true);

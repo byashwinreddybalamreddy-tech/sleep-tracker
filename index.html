@@ -19,6 +19,17 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
+    <script>
+      (function() {
+        const origError = console.error;
+        console.error = function(...args) {
+          if (args[0] && typeof args[0] === 'string' && (args[0].includes('WebSocket') || args[0].includes('closed without opened'))) {
+            return;
+          }
+          origError.apply(console, args);
+        };
+      })();
+    </script>
   </head>
   <body class="bg-[#f0f2f5] text-slate-900 antialiased selection:bg-blue-600 selection:text-white min-h-screen">
     <div id="root"></div>

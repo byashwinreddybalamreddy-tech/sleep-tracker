@@ -535,6 +535,11 @@ export default function App() {
                 onSyncAlarms={handleSyncAlarms}
                 onTriggerTestAlarm={handleTriggerTestAlarm}
                 onOpenWeeklyReport={() => setShowWeeklySleepReport(true)}
+                onUpdateReminders={(updated) => setReminders(updated)}
+                onClearDemoData={() => {
+                  setClasses([]);
+                  showToast('Demo schedule cleared! Add your own classes in Timetable.');
+                }}
               />
             )}
 
